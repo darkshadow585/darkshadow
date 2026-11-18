@@ -1,0 +1,54 @@
+# Secrets and environment configurations
+.env
+.env.*
+*.env
+*.key
+*.pem
+credentials.json
+token.json
+contacts.json
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs and databases
+*.log
+logs/
+dark_shadow/logs/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+test_mem.db
+
+# IDE & OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+dxdiag_output.txt
+
+# Audio test and generated media
+*.mp3
+*.wav
+*.aac
+*.flac
+*.ogg
+
+# Platform tools & agent caches
+.darkshadow/
+.agents/
+.test-deps/
+platform-tools/
