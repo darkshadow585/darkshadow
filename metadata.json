@@ -1,0 +1,10 @@
+{
+  "name": "DarkShadow",
+  "description": "Personal AI co-pilot for Captain with fluid single-orb HUD, Hindi/English/Hinglish voice and typed modes, live search grounding, safe deterministic commands, and opt-in memory with reminders.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

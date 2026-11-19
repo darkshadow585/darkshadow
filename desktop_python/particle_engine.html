@@ -1,0 +1,438 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DarkShadow WebGL2 Particle Engine</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background: transparent !important;
+      user-select: none;
+      font-family: "Segoe UI", system-ui, sans-serif;
+    }
+    #gl-canvas {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      display: block;
+      background: transparent;
+    }
+    #hud {
+      position: fixed;
+      left: 50%;
+      bottom: 46px;
+      transform: translateX(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      pointer-events: none;
+      transition: opacity 0.25s ease;
+    }
+    #hud.hidden {
+      opacity: 0;
+    }
+    #status-pill {
+      color: #80d8ff;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 1.4px;
+      text-transform: uppercase;
+      text-shadow: 0 0 12px rgba(0, 210, 255, 0.65);
+    }
+    #caption-box {
+      max-width: 680px;
+      color: #f8f9fd;
+      font-size: 15px;
+      line-height: 1.45;
+      text-align: center;
+      padding: 10px 20px;
+      border-radius: 16px;
+      background: rgba(5, 8, 18, 0.76);
+      border: 1px solid rgba(118, 92, 255, 0.38);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+      backdrop-filter: blur(10px);
+      display: none;
+    }
+    #caption-box.visible {
+      display: block;
+    }
+    #sub-caption {
+      font-size: 12px;
+      color: #80d8ff;
+      margin-bottom: 4px;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gl-canvas"></canvas>
+  <div id="hud" class="hidden">
+    <div id="status-pill">READY</div>
+    <div id="caption-box">
+      <div id="sub-caption"></div>
+      <div id="main-caption"></div>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      const canvas = document.getElementById("gl-canvas");
+      const hud = document.getElementById("hud");
+      const statusPill = document.getElementById("status-pill");
+      const captionBox = document.getElementById("caption-box");
+      const subCaption = document.getElementById("sub-caption");
+      const mainCaption = document.getElementById("main-caption");
+
+      const gl = canvas.getContext("webgl2", {
+        alpha: true,
+        antialias: false,
+        premultipliedAlpha: false,
+      });
+
+      const VERT = `#version 300 es
+        precision highp float;
+        layout(location = 0) in vec3 aPos;
+        layout(location = 1) in vec3 aColor;
+        layout(location = 2) in float aSize;
+        layout(location = 3) in float aAlpha;
+        uniform float uAspect;
+        uniform float uDpr;
+        out vec3 vColor;
+        out float vAlpha;
+        void main() {
+          float zCam = 2.6 - aPos.z;
+          float persp = 1.9 / max(0.4, zCam);
+          gl_Position = vec4(aPos.x / uAspect * persp, aPos.y * persp, 0.0, 1.0);
+          gl_PointSize = clamp(aSize * persp * uDpr, 1.4, 24.0);
+          vColor = aColor;
+          vAlpha = aAlpha * clamp(persp * 0.9, 0.25, 1.0);
+        }
+      `;
+
+      const FRAG = `#version 300 es
+        precision highp float;
+        in vec3 vColor;
+        in float vAlpha;
+        out vec4 fragColor;
+        void main() {
+          vec2 c = gl_PointCoord - vec2(0.5);
+          float d2 = dot(c, c);
+          if (d2 > 0.25) discard;
+          float core = exp(-d2 * 24.0);
+          float halo = exp(-d2 * 6.2) * 0.58;
+          float intensity = core + halo;
+          vec3 col = mix(vColor, vec3(1.0), core * 0.68);
+          fragColor = vec4(col * intensity, clamp(intensity * vAlpha, 0.0, 1.0));
+        }
+      `;
+
+      function makeShader(type, src) {
+        const s = gl.createShader(type);
+        gl.shaderSource(s, src);
+        gl.compileShader(s);
+        return s;
+      }
+
+      let prog = null, vao = null, vbo = null, uAspect = null, uDpr = null;
+      const COUNT = 6000;
+
+      const posX = new Float32Array(COUNT), posY = new Float32Array(COUNT), posZ = new Float32Array(COUNT);
+      const velX = new Float32Array(COUNT), velY = new Float32Array(COUNT), velZ = new Float32Array(COUNT);
+      const botX = new Float32Array(COUNT), botY = new Float32Array(COUNT), botZ = new Float32Array(COUNT);
+
+      // 4 Distinct 3D Target Morph Geometries:
+      // 0: Fibonacci Sphere (Listening)
+      // 1: DNA Double Helix + Atom Rings (Thinking)
+      // 2: Plasma Audio Torus (Speaking)
+      // 3: Geometric Shield Cube (Alert / Sentinel)
+      const sphX = new Float32Array(COUNT), sphY = new Float32Array(COUNT), sphZ = new Float32Array(COUNT);
+      const helX = new Float32Array(COUNT), helY = new Float32Array(COUNT), helZ = new Float32Array(COUNT);
+      const torX = new Float32Array(COUNT), torY = new Float32Array(COUNT), torZ = new Float32Array(COUNT);
+      const cubX = new Float32Array(COUNT), cubY = new Float32Array(COUNT), cubZ = new Float32Array(COUNT);
+
+      const seed = new Float32Array(COUNT);
+      const pPhase = new Float32Array(COUNT);
+      const sizes = new Float32Array(COUNT);
+      const alphas = new Float32Array(COUNT);
+      const verts = new Float32Array(COUNT * 8);
+
+      const golden = Math.PI * (1 + Math.sqrt(5));
+      for (let i = 0; i < COUNT; i++) {
+        const idx = i + 0.5;
+        const r1 = Math.sin(i * 12.9898) * 43758.5453;
+        const s = r1 - Math.floor(r1);
+        const r2 = Math.sin(i * 78.233 + 1.7) * 43758.5453;
+        const s2 = r2 - Math.floor(r2);
+        const r3 = Math.sin(i * 39.425 + 4.3) * 43758.5453;
+        const s3 = r3 - Math.floor(r3);
+
+        seed[i] = s;
+        pPhase[i] = s2 * Math.PI * 2;
+        sizes[i] = 1.9 + s3 * 3.1;
+
+        botX[i] = (s2 * 2 - 1) * 1.15;
+        botY[i] = -1.18 - s * 0.38;
+        botZ[i] = (s3 * 2 - 1) * 0.4;
+        posX[i] = botX[i]; posY[i] = botY[i]; posZ[i] = botZ[i];
+
+        // 0: Fibonacci Sphere
+        const phi = Math.acos(1 - (2 * idx) / COUNT);
+        const theta = golden * idx;
+        sphX[i] = Math.sin(phi) * Math.cos(theta) * 0.44;
+        sphY[i] = Math.cos(phi) * 0.44;
+        sphZ[i] = Math.sin(phi) * Math.sin(theta) * 0.44;
+
+        // 1: DNA Double Helix + Orbital Atom Rings
+        if (i < COUNT * 0.65) {
+          const tH = (i / (COUNT * 0.65)) * 2 - 1; // -1..1
+          const strand = (i % 2 === 0) ? 0 : Math.PI;
+          const twist = tH * Math.PI * 3.2 + strand;
+          const rH = 0.24 + (s3 - 0.5) * 0.04;
+          helX[i] = Math.cos(twist) * rH;
+          helY[i] = tH * 0.52;
+          helZ[i] = Math.sin(twist) * rH;
+        } else {
+          const ringIdx = i % 3;
+          const a = s2 * Math.PI * 2;
+          const rr = 0.48 + (s3 - 0.5) * 0.03;
+          let rx = Math.cos(a) * rr, ry = 0, rz = Math.sin(a) * rr;
+          const tilt = ringIdx === 0 ? 0.6 : ringIdx === 1 ? -0.6 : 1.5;
+          const ct = Math.cos(tilt), st = Math.sin(tilt);
+          helX[i] = rx;
+          helY[i] = ry * ct - rz * st;
+          helZ[i] = ry * st + rz * ct;
+        }
+
+        // 2: Plasma Audio Torus
+        const u = s2 * Math.PI * 2;
+        const v = s3 * Math.PI * 2;
+        const R = 0.36, r = 0.14;
+        torX[i] = (R + r * Math.cos(v)) * Math.cos(u);
+        torY[i] = r * Math.sin(v) * 1.15;
+        torZ[i] = (R + r * Math.cos(v)) * Math.sin(u);
+
+        // 3: Geometric Shield Cube (hollow wireframe + surface faces)
+        const face = i % 6;
+        const a1 = (s2 * 2 - 1) * 0.36;
+        const a2 = (s3 * 2 - 1) * 0.36;
+        if (face === 0) { cubX[i] = 0.36; cubY[i] = a1; cubZ[i] = a2; }
+        else if (face === 1) { cubX[i] = -0.36; cubY[i] = a1; cubZ[i] = a2; }
+        else if (face === 2) { cubX[i] = a1; cubY[i] = 0.36; cubZ[i] = a2; }
+        else if (face === 3) { cubX[i] = a1; cubY[i] = -0.36; cubZ[i] = a2; }
+        else if (face === 4) { cubX[i] = a1; cubY[i] = a2; cubZ[i] = 0.36; }
+        else { cubX[i] = a1; cubY[i] = a2; cubZ[i] = -0.36; }
+      }
+
+      if (gl) {
+        prog = gl.createProgram();
+        gl.attachShader(prog, makeShader(gl.VERTEX_SHADER, VERT));
+        gl.attachShader(prog, makeShader(gl.FRAGMENT_SHADER, FRAG));
+        gl.linkProgram(prog);
+        uAspect = gl.getUniformLocation(prog, "uAspect");
+        uDpr = gl.getUniformLocation(prog, "uDpr");
+        vao = gl.createVertexArray();
+        vbo = gl.createBuffer();
+        gl.bindVertexArray(vao);
+        gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+        gl.bufferData(gl.ARRAY_BUFFER, verts.byteLength, gl.DYNAMIC_DRAW);
+        const stride = 32;
+        gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, stride, 0);
+        gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, stride, 12);
+        gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 1, gl.FLOAT, false, stride, 24);
+        gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 1, gl.FLOAT, false, stride, 28);
+        gl.bindVertexArray(0);
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+      }
+
+      let state = "dormant"; // dormant | rising | listening | thinking | speaking | alert | dissolving
+      let shape = "sphere";  // sphere | helix | torus | shield
+      let bass = 0, mid = 0, treble = 0;
+      let sBass = 0, sMid = 0, sTreble = 0;
+      let t = 0, stateTime = 0;
+      let lastNow = performance.now();
+
+      function resetForRise() {
+        for (let i = 0; i < COUNT; i++) {
+          posX[i] = botX[i]; posY[i] = botY[i]; posZ[i] = botZ[i];
+          velX[i] = -botX[i] * 0.45;
+          velY[i] = 1.75 + seed[i] * 1.45;
+          velZ[i] = Math.sin(pPhase[i]) * 0.35;
+          alphas[i] = 0;
+        }
+      }
+
+      window.DarkShadowFX = {
+        setState(nextState, nextShape) {
+          if (nextState !== state) {
+            state = nextState;
+            stateTime = 0;
+            if (state === "rising") resetForRise();
+          }
+          if (nextShape) {
+            shape = nextShape;
+          } else {
+            if (state === "thinking") shape = "helix";
+            else if (state === "speaking") shape = "torus";
+            else if (state === "alert") shape = "shield";
+            else if (state === "listening" || state === "rising") shape = "sphere";
+          }
+          const labels = {
+            dormant: "STANDBY",
+            rising: "HEY DARK SHADOW — SUMMONING",
+            listening: "LISTENING • SPHERE",
+            thinking: "THINKING • DNA HELIX",
+            speaking: "SPEAKING • PLASMA TORUS",
+            alert: "SENTINEL • SHIELD",
+            dissolving: "GOING TO SLEEP",
+          };
+          statusPill.textContent = labels[state] || state.toUpperCase();
+          hud.classList.toggle("hidden", state === "dormant");
+        },
+        setAudio(b, m, tr) {
+          bass = Math.max(0, Math.min(1, Number(b) || 0));
+          mid = Math.max(0, Math.min(1, Number(m) || 0));
+          treble = Math.max(0, Math.min(1, Number(tr) || 0));
+        },
+        setCaption(mainText, subText) {
+          const m = (mainText || "").trim();
+          const s = (subText || "").trim();
+          mainCaption.textContent = m;
+          subCaption.textContent = s;
+          captionBox.classList.toggle("visible", Boolean(m || s));
+        },
+      };
+
+      function getTargetArrays() {
+        if (shape === "helix") return [helX, helY, helZ];
+        if (shape === "torus") return [torX, torY, torZ];
+        if (shape === "shield") return [cubX, cubY, cubZ];
+        return [sphX, sphY, sphZ];
+      }
+
+      function tick(now) {
+        const dt = Math.min(0.04, (now - lastNow) / 1000);
+        lastNow = now;
+        t += dt;
+        stateTime += dt;
+
+        const audioActive = (state === "listening" || state === "speaking");
+        sBass += ((audioActive ? bass : 0) - sBass) * Math.min(1, dt * 15);
+        sMid += ((audioActive ? mid : 0) - sMid) * Math.min(1, dt * 15);
+        sTreble += ((audioActive ? treble : 0) - sTreble) * Math.min(1, dt * 18);
+
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const w = window.innerWidth, h = window.innerHeight;
+        if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+          canvas.width = Math.round(w * dpr);
+          canvas.height = Math.round(h * dpr);
+        }
+
+        const [txArr, tyArr, tzArr] = getTargetArrays();
+        const rotY = t * (state === "thinking" ? 1.15 : 0.38 + sMid * 0.9);
+        const rotX = shape === "torus" ? 0.55 + Math.sin(t * 0.7) * 0.25 : shape === "shield" ? t * 0.45 : Math.sin(t * 0.35) * 0.14;
+        const cy = Math.cos(rotY), sy = Math.sin(rotY);
+        const cx = Math.cos(rotX), sx = Math.sin(rotX);
+
+        let c1r = 0.0, c1g = 0.82, c1b = 1.0;
+        let c2r = 0.46, c2g = 0.36, c2b = 1.0;
+        if (state === "thinking") { c1r = 0.84; c1g = 0.34; c1b = 1.0; c2r = 0.42; c2g = 0.34; c2b = 1.0; }
+        else if (state === "speaking") { c1r = 0.0; c1g = 0.9; c1b = 1.0; c2r = 0.65; c2g = 0.4; c2b = 1.0; }
+        else if (state === "alert") { c1r = 1.0; c1g = 0.28; c1b = 0.4; c2r = 1.0; c2g = 0.62; c2b = 0.22; }
+
+        for (let i = 0; i < COUNT; i++) {
+          // 3D rotation (Y then X)
+          const ox = txArr[i], oy = tyArr[i], oz = tzArr[i];
+          const x1 = ox * cy - oz * sy;
+          const z1 = ox * sy + oz * cy;
+          const y2 = oy * cx - z1 * sx;
+          const z2 = oy * sx + z1 * cx;
+
+          // 3-Band FFT Audio Deformation (Bass = radial expand, Mid = harmonic waves, Treble = high-freq shimmer)
+          const bassBoost = 1.0 + sBass * 0.32;
+          const midWave = (0.015 + sMid * 0.16) * Math.sin(x1 * 9.0 + t * 6.5) * Math.cos(y2 * 9.0 - t * 5.0);
+          const trebleSpark = sTreble * 0.08 * Math.sin(pPhase[i] * 3.0 + t * 22.0);
+          const scale = bassBoost + midWave + trebleSpark;
+
+          const gx = x1 * scale;
+          const gy = y2 * scale;
+          const gz = z2 * scale;
+
+          if (state === "dormant") {
+            alphas[i] *= 0.86;
+          } else if (state === "rising") {
+            const delay = seed[i] * 0.4;
+            const progRise = Math.max(0, Math.min(1, (stateTime - delay) / 1.15));
+            if (progRise > 0) {
+              const swirl = (1 - progRise) * 2.4;
+              const k = 8.0 * Math.pow(progRise, 1.5);
+              velX[i] += ((gx - posX[i]) * k - velX[i] * 3.8 - posZ[i] * swirl) * dt;
+              velY[i] += ((gy - posY[i]) * k - velY[i] * 3.8) * dt;
+              velZ[i] += ((gz - posZ[i]) * k - velZ[i] * 3.8 + posX[i] * swirl) * dt;
+              posX[i] += velX[i] * dt;
+              posY[i] += velY[i] * dt;
+              posZ[i] += velZ[i] * dt;
+              alphas[i] = Math.min(0.95, progRise * 1.45);
+            }
+          } else if (state === "dissolving") {
+            velY[i] -= (2.4 + seed[i] * 1.8) * dt;
+            velX[i] += Math.sin(t * 5.2 + pPhase[i]) * 0.5 * dt;
+            posX[i] += velX[i] * dt;
+            posY[i] += velY[i] * dt;
+            posZ[i] += velZ[i] * dt;
+            alphas[i] = Math.max(0, 1 - stateTime / 1.15);
+          } else {
+            const k = state === "speaking" ? 14.5 : 11.5;
+            const tang = 0.14 + sMid * 0.9;
+            velX[i] += ((gx - posX[i]) * k - velX[i] * 5.0 - z2 * tang) * dt;
+            velY[i] += ((gy - posY[i]) * k - velY[i] * 5.0) * dt;
+            velZ[i] += ((gz - posZ[i]) * k - velZ[i] * 5.0 + x1 * tang) * dt;
+            posX[i] += velX[i] * dt;
+            posY[i] += velY[i] * dt;
+            posZ[i] += velZ[i] * dt;
+            alphas[i] = Math.min(0.96, alphas[i] + dt * 3.2);
+          }
+
+          const mix = 0.5 + 0.5 * Math.sin(pPhase[i] + t * 1.6 + y2 * 3.0);
+          const o = i * 8;
+          verts[o] = posX[i]; verts[o + 1] = posY[i]; verts[o + 2] = posZ[i];
+          verts[o + 3] = c1r * mix + c2r * (1 - mix);
+          verts[o + 4] = c1g * mix + c2g * (1 - mix);
+          verts[o + 5] = c1b * mix + c2b * (1 - mix);
+          verts[o + 6] = sizes[i] * (1.0 + sBass * 0.55 + sTreble * 0.4);
+          verts[o + 7] = alphas[i];
+        }
+
+        if (state === "rising" && stateTime >= 1.6) {
+          window.DarkShadowFX.setState("listening", "sphere");
+        } else if (state === "dissolving" && stateTime >= 1.2) {
+          window.DarkShadowFX.setState("dormant", "sphere");
+        }
+
+        if (gl && prog) {
+          gl.viewport(0, 0, canvas.width, canvas.height);
+          gl.clearColor(0, 0, 0, 0);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          gl.useProgram(prog);
+          gl.uniform1f(uAspect, Math.max(0.1, w / Math.max(1, h)));
+          gl.uniform1f(uDpr, dpr);
+          gl.bindVertexArray(vao);
+          gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+          gl.bufferSubData(gl.ARRAY_BUFFER, 0, verts);
+          gl.drawArrays(gl.POINTS, 0, COUNT);
+          gl.bindVertexArray(0);
+        }
+        requestAnimationFrame(tick);
+      }
+
+      requestAnimationFrame(tick);
+    })();
+  </script>
+</body>
+</html>

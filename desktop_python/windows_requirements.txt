@@ -1,0 +1,16 @@
+PySide6>=6.7.0
+PySide6-Addons>=6.7.0
+numpy>=1.26.0
+sounddevice>=0.4.6
+SpeechRecognition>=3.10.4
+google-genai>=1.0.0
+edge-tts>=6.1.12
+pygame>=2.6.0
+python-dotenv>=1.0.1
+mss>=9.0.1
+Pillow>=10.3.0
+psutil>=5.9.8
+screen-brightness-control>=0.24.0
+pyperclip>=1.9.0
+# Optional offline wake-word engine (uncomment if you want 100% offline <1% CPU wake-word):
+# openwakeword>=0.6.0
